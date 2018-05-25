@@ -25,6 +25,7 @@ program
     .option('-I --indent [size]',
             'Sets the indent size for jsbeautify',
             4)
+    .option('-r --replace', 'Replaces existing file')
     .parse(process.argv);
 
 if (program.dir && !program.out) {
@@ -43,28 +44,22 @@ if (!program.dir && !program.args.length) {
 }
 
 var inputFiles = program.args;
+var htmlFiles = [];
 
 if (program.dir) {
 
     inputFiles = glob.sync(program.glob, {
-        cwd: program.dir
+        cwd: program.dir,
+        ignore: program.ignore.length ? program.ignore : "node_modules/**/*"
     });
 
-    if (program.ignore.length) {
-
-        var ignoreFiles = program.ignore.map(function (pattern) {
-            return glob.sync(pattern, {
-                cwd: program.dir
-            });
-        }).reduce(function (memo, files) {
-            return memo.concat(files);
-        }, []);
-
-        inputFiles = inputFiles.filter(function (f) {
-            return ignoreFiles.indexOf(f) === -1;
-        });
-    }
+    htmlFiles = glob.sync("**/*.html", {
+        cwd: program.dir,
+        ignore: program.ignore.length ? program.ignore : "node_modules/**/*"
+    });
 }
+
+var filePathes = [...inputFiles, ...htmlFiles.map((f) => f.replace('.html', '.js'))];
 
 inputFiles.forEach(function (srcFile) {
 
@@ -76,7 +71,9 @@ inputFiles.forEach(function (srcFile) {
     try {
         compiled = amdtoes6(context, {
             beautify: program.beautify,
-            indent: program.indent
+            indent: program.indent,
+            filePathes,
+            filePath
         });
     }
     catch (e) {
@@ -85,11 +82,17 @@ inputFiles.forEach(function (srcFile) {
     }
 
     if (program.dir) {
-        var outdir = path.dirname(path.join(program.out, srcFile));
-        mkdirp.sync(outdir);
+        var p = path.join(program.out, srcFile);
 
-        fs.writeFileSync(path.join(program.out, srcFile), compiled);
-        console.log('Successfully compiled', filePath, 'to', path.join(program.out, srcFile));
+        if (fs.existsSync(p) && !program.replace) {
+            console.log(`${filePath} already exists`);
+        } else {
+            var outdir = path.dirname(p);
+            mkdirp.sync(outdir);
+    
+            fs.writeFileSync(path.join(program.out, srcFile), compiled);
+            console.log('Successfully compiled', filePath, 'to', path.join(program.out, srcFile));
+        }
     }
     else {
         console.log(compiled);

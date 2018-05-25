@@ -2,6 +2,8 @@ var os = require('os');
 var falafel = require('falafel');
 var acorn = require('acorn-jsx');
 var beautify = require('js-beautify').js_beautify;
+var path = require('path');
+var program = require('commander');
 
 module.exports = convert;
 
@@ -19,14 +21,19 @@ function convert (source, options) {
     var syncRequires = [];
     var requiresWithSideEffects = [];
     var mainCallExpression = null;
+    var imports = [];
 
     var result = falafel(source, {
         parser: acorn,
         plugins: {jsx: true},
+        sourceType: 'module',
         ecmaVersion: 6
     }, function (node) {
-        if (isNamedDefine(node)) {
-            throw new Error('Found a named define - this is not supported.');
+
+        var s = source;
+
+        if (node.type === 'ImportDeclaration') {
+            imports.push({ path: s.slice(node.start, node.end).match(/[^\s]*$/)[0], node});
         }
 
         if (isDefineUsingIdentifier(node)) {
@@ -50,10 +57,6 @@ function convert (source, options) {
             requiresWithSideEffects.push(node);
         }
 
-        else if (isRequireWithDynamicModuleName(node)) {
-            throw new Error('Dynamic module names are not supported.');
-        }
-
         if (isUseStrict(node)) {
           node.parent.update('');
         }
@@ -65,8 +68,26 @@ function convert (source, options) {
         return source;
     }
 
-    var moduleDeps = mainCallExpression.arguments.length > 1 ? mainCallExpression.arguments[0] : null;
-    var moduleFunc = mainCallExpression.arguments[mainCallExpression.arguments.length > 1 ? 1 : 0];
+    var moduleName = null;
+    var moduleDeps = null;
+    var moduleFunc = null;
+
+    mainCallExpression.arguments.forEach(function(arg) {
+        if (arg.type === 'FunctionExpression' || arg.type === 'ArrowFunctionExpression') {
+            moduleFunc = arg;
+        }
+        else if (arg.type === 'ArrayExpression') {
+            moduleDeps = arg;
+        }
+        else {
+            moduleName = arg.value;
+        }
+    })
+
+    if (moduleName !== path.basename(options.filePath).split('.')[0]) {
+        console.warn('\x1b[33m%s\x1b[0m', `\n${options.filePath} module and file name isn't the same\n`)
+    }
+    
     var hasDeps = moduleDeps && moduleDeps.elements.length > 0;
 
     if (hasDeps) {
@@ -120,6 +141,30 @@ function convert (source, options) {
         node.parent.update('');
     });
 
+    var newDepMap = {};
+
+    for (var key in dependenciesMap) {
+        var imp = imports.find(function(i) {return i.path.includes(key.slice(1, key.length-1)+'.js')});
+        
+        if (imp) {
+            newDepMap[imp.path.slice(0, imp.path.length-1)] = dependenciesMap[key];
+            imp.node.update("");
+        }
+        else {
+            imp = options.filePathes.find(function(i) {return i.includes(key.slice(1, key.length-1)+'.js')});
+
+            if (imp) {
+                var impo = path.relative(options.filePath, path.join(program.dir, imp))
+                newDepMap["'"+impo.slice(1)+"'"] = dependenciesMap[key];
+            }
+            else {
+                newDepMap[key] = dependenciesMap[key];
+            }
+        }
+    }
+
+    dependenciesMap = newDepMap;
+
     // start with import statements
     var moduleCode = getImportStatements(dependenciesMap);
 
@@ -167,11 +212,17 @@ function getImportStatements (dependencies) {
  * @param {object} functionExpression
  */
 function updateReturnStatement (functionExpression) {
-    functionExpression.body.body.forEach(function (node) {
-        if (node.type === 'ReturnStatement') {
-            node.update(node.source().replace('return ', 'export default '));
-        }
-    });
+
+    if (functionExpression.body.type === "BlockStatement") {
+        functionExpression.body.body.forEach(function (node) {
+            if (node.type === 'ReturnStatement') {
+                node.update(node.source().replace('return ', 'export default '));
+            }
+        });
+    }
+    else {
+        functionExpression.body.update('export default ' + functionExpression.body.source())
+    }
 }
 
 /**
@@ -184,6 +235,10 @@ function getModuleCode (moduleFuncNode) {
     updateReturnStatement(moduleFuncNode);
 
     var moduleCode = moduleFuncNode.body.source();
+
+    if (moduleCode[0] !== "{") {
+        return moduleCode;
+    }
 
     // strip '{' and '}' from beginning and end
     moduleCode = moduleCode.substring(1);
@@ -297,7 +352,7 @@ function isModuleDefinition (node) {
     }
 
     var argTypes = getArgumentsTypes(node);
-
+    
     // eg. require(['a', 'b'])
     if (arrayEquals(argTypes, ['ArrayExpression'])) {
         return true;
@@ -308,18 +363,45 @@ function isModuleDefinition (node) {
         return true;
     }
 
-    // eg. require(['a', 'b'], () => {})
-    if (arrayEquals(argTypes, ['ArrayExpression', 'ArrowFunctionExpression'])) {
-        return true;
-    }
-
     // eg. require(function () {}) or define(function () {})
     if (arrayEquals(argTypes, ['FunctionExpression'])) {
         return true;
     }
 
-    // eg. require(() => {}) or define(() => {})
+    // eg. define('', function () {})
+    if (arrayEquals(argTypes, ['Literal', 'FunctionExpression'])) {
+        return true;
+    }
+
+    // eg. define('', [], function () {})
+    if (arrayEquals(argTypes, ['Literal', 'ArrayExpression', 'FunctionExpression'])) {
+        return true;
+    }
+
+    
+
+    // eg. require(['a', 'b'])
+    if (arrayEquals(argTypes, ['ArrayExpression'])) {
+        return true;
+    }
+
+    // eg. require(['a', 'b'], function () {})
+    if (arrayEquals(argTypes, ['ArrayExpression', 'ArrowFunctionExpression'])) {
+        return true;
+    }
+
+    // eg. require(function () {}) or define(function () {})
     if (arrayEquals(argTypes, ['ArrowFunctionExpression'])) {
+        return true;
+    }
+
+    // eg. define('', function () {})
+    if (arrayEquals(argTypes, ['Literal', 'ArrowFunctionExpression'])) {
+        return true;
+    }
+
+    // eg. define('', [], function () {})
+    if (arrayEquals(argTypes, ['Literal', 'ArrayExpression', 'ArrowFunctionExpression'])) {
         return true;
     }
 }
