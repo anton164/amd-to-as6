@@ -70,11 +70,14 @@ inputFiles.forEach(function (srcFile) {
 
     var filePath = program.dir ? path.join(program.dir, srcFile) : srcFile;
 
-    var context = fs.readFileSync(filePath, 'utf8');
     var compiled;
+    var preprocessedFile = fs.readFileSync(filePath, 'utf8')
+        .toString()
+        .replace(/^import/gm, "// __refactoringImport")
+        .replace(/^define\(['"].*['"], /gm, "define(");
 
     try {
-        compiled = amdtoes6(context, {
+        compiled = amdtoes6(preprocessedFile, {
             beautify: program.beautify,
             indent: program.indent
         });
@@ -84,15 +87,19 @@ inputFiles.forEach(function (srcFile) {
         return;
     }
 
+    var finalOutput = compiled
+        .replace(/^\/\/ __refactoringImport/gm, "import")
+        .replace(/^['"]use strict['"];\n/m, "");
+
     if (program.dir) {
         var outdir = path.dirname(path.join(program.out, srcFile));
         mkdirp.sync(outdir);
 
-        fs.writeFileSync(path.join(program.out, srcFile), compiled);
+        fs.writeFileSync(path.join(program.out, srcFile), finalOutput);
         console.log('Successfully compiled', filePath, 'to', path.join(program.out, srcFile));
     }
     else {
-        console.log(compiled);
+        console.log(finalOutput);
     }
 
 });
