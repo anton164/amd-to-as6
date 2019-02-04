@@ -23,7 +23,7 @@ function convert (source, options) {
     var result = falafel(source, {
         parser: acorn,
         plugins: {jsx: true},
-        ecmaVersion: 6
+        ecmaVersion: 8
     }, function (node) {
         if (isNamedDefine(node)) {
             throw new Error('Found a named define - this is not supported.');
