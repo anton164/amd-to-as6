@@ -27,8 +27,7 @@ program
   )
   .option(
     "-g --glob [glob]",
-    "If using the --dir option, optionally specify the glob pattern to match for input files",
-    "**/*.js"
+    "If using the --dir option, optionally specify the glob pattern to match for input files"
   )
   .option(
     "-b --beautify",
@@ -60,9 +59,16 @@ if (!program.dir && !program.args.length) {
 var inputFiles = program.args;
 
 if (program.dir) {
-  inputFiles = glob.sync(program.glob, {
-    cwd: program.dir
-  });
+  if (program.glob) {
+    inputFiles = glob.sync(program.glob, {
+      cwd: program.dir
+    });
+  } else {
+    inputFiles = [
+      ...glob.sync("**/*.js", { cwd: program.dir }),
+      ...glob.sync("**/*.jsx", { cwd: program.dir })
+    ];
+  }
 
   if (program.ignore.length) {
     var ignoreFiles = program.ignore
@@ -111,6 +117,7 @@ inputFiles.forEach(function(srcFile) {
   tasks.push(
     prettier.resolveConfig(filePath).then(prettierOptions => {
       var finalOutput = compiled
+        .replace(/^module\.exports =/m, "export default")
         .replace(/^\/\*__refactoringImport([\s\S]+?)\*\/$/gm, "$1")
         .replace(/^['"]use strict['"];\n/m, "");
 
@@ -143,11 +150,11 @@ inputFiles.forEach(function(srcFile) {
   );
 });
 
-function lookForUsage(moduleEnding, callback) {
+function lookFor(query, callback) {
   const spawn = require("child_process").spawn;
   const results = [];
 
-  var child = spawn("grep", ["-rH", moduleEnding, program.root]);
+  var child = spawn("grep", ["-rH", query, program.root]);
   child.stdout.on("data", function(buffer) {
     const [filename, grepResult] = buffer.toString().split(":");
     if (
@@ -167,11 +174,17 @@ Promise.all(tasks).then(successfulTasks => {
   successfulTasks
     .filter(res => Boolean(res))
     .forEach(({ moduleEnding }) => {
-      lookForUsage(moduleEnding, results => {
+      lookFor(moduleEnding, results => {
         if (results.length) {
-          console.log(`Found AMD usage of ${moduleEnding} in: `);
+          console.log(`Found AMD usage of in: `);
           console.log(results.join("\n"));
         }
       });
     });
+  lookFor("export default {", results => {
+    if (results.length) {
+      console.log(`Found export default of singleton in:`);
+      console.log(results.join(", "));
+    }
+  });
 });
